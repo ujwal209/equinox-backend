@@ -4,7 +4,7 @@ import json
 import asyncio
 from datetime import datetime
 from urllib.parse import quote
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Request
 from dependencies import get_current_user
 from pydantic import BaseModel
 import httpx
@@ -1104,3 +1104,16 @@ async def trigger_watchlist_recommendations_email(current_user: dict = Depends(g
     except Exception as e:
         logger.error(f"Manual watchlist email trigger failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/recommendations/email/cron")
+async def trigger_cron_emails(request: Request):
+    import os
+    auth_header = request.headers.get("Authorization")
+    expected_secret = os.getenv("CRON_SECRET")
+    if expected_secret:
+        if not auth_header or auth_header != f"Bearer {expected_secret}":
+            raise HTTPException(status_code=403, detail="Forbidden")
+    from services.recommendations import dispatch_watchlist_emails_to_all_users
+    await dispatch_watchlist_emails_to_all_users()
+    return {"status": "emails dispatched"}

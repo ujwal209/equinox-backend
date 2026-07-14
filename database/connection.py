@@ -28,54 +28,48 @@ class Database:
             logger.info("Closed MongoDB database connection client pool.")
 
 # Helper to fetch active DB collections
-def get_user_collection():
+def get_db():
     if Database.db is None:
-        raise RuntimeError("Database connection not initialized.")
-    return Database.db["users"]
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from config.settings import settings
+        logger.info("[Database] Auto-initializing MongoDB client for serverless container...")
+        try:
+            Database.client = AsyncIOMotorClient(settings.MONGO_URI)
+            db_name = settings.MONGO_URI.split("/")[-1].split("?")[0] or "equinox"
+            Database.db = Database.client[db_name]
+            logger.info(f"[Database] Successfully initialized database: '{db_name}'")
+        except Exception as e:
+            logger.error(f"[Database] Failed to auto-initialize MongoDB client: {e}")
+            raise e
+    return Database.db
+
+def get_user_collection():
+    return get_db()["users"]
 
 def get_otp_collection():
-    if Database.db is None:
-        raise RuntimeError("Database connection not initialized.")
-    return Database.db["otps"]
+    return get_db()["otps"]
 
 def get_indices_collection():
-    if Database.db is None:
-        raise RuntimeError("Database connection not initialized.")
-    return Database.db["indices"]
+    return get_db()["indices"]
 
 def get_sectors_collection():
-    if Database.db is None:
-        raise RuntimeError("Database connection not initialized.")
-    return Database.db["sectors"]
+    return get_db()["sectors"]
 
 def get_watchlist_collection():
-    if Database.db is None:
-        raise RuntimeError("Database connection not initialized.")
-    return Database.db["watchlists"]
+    return get_db()["watchlists"]
 
 def get_companies_collection():
-    if Database.db is None:
-        raise RuntimeError("Database connection not initialized.")
-    return Database.db["companies"]
-
+    return get_db()["companies"]
 
 def get_paper_portfolios_collection():
-    if Database.db is None:
-        raise RuntimeError("Database connection not initialized.")
-    return Database.db["paper_portfolios"]
+    return get_db()["paper_portfolios"]
 
 def get_paper_positions_collection():
-    if Database.db is None:
-        raise RuntimeError("Database connection not initialized.")
-    return Database.db["paper_positions"]
+    return get_db()["paper_positions"]
 
 def get_paper_orders_collection():
-    if Database.db is None:
-        raise RuntimeError("Database connection not initialized.")
-    return Database.db["paper_orders"]
+    return get_db()["paper_orders"]
 
 def get_recommendations_cache_collection():
-    if Database.db is None:
-        raise RuntimeError("Database connection not initialized.")
-    return Database.db["recommendations_cache"]
+    return get_db()["recommendations_cache"]
 
