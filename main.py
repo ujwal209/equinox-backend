@@ -10,30 +10,35 @@ async def lifespan(app: FastAPI):
     # Establish connection pooling to MongoDB on server startup
     await Database.connect_db()
     
-    # Check if database is empty, seed if needed
-    from database.connection import get_indices_collection
-    indices_col = get_indices_collection()
-    count = await indices_col.count_documents({})
-    if count == 0:
-        try:
-            from seed_indian_stocks import main as seed_main
-            await seed_main()
-            print("[Equinox Server] Successfully seeded relational indices, sectors, and companies!")
-        except Exception as e:
-            print(f"[Equinox Server] Error running database seeder: {e}")
-            
-    # Start the watchlist email scheduler background task
-    import asyncio
-    from services.recommendations import start_email_scheduler
-    from services.pinger import start_render_pinger
+    import os
+    is_vercel = os.getenv("VERCEL") == "1"
     
-    scheduler_task = asyncio.create_task(start_email_scheduler())
-    pinger_task = asyncio.create_task(start_render_pinger())
+    if not is_vercel:
+        # Check if database is empty, seed if needed (skip on Vercel to prevent 10s timeout crash)
+        from database.connection import get_indices_collection
+        indices_col = get_indices_collection()
+        count = await indices_col.count_documents({})
+        if count == 0:
+            try:
+                from seed_indian_stocks import main as seed_main
+                await seed_main()
+                print("[Equinox Server] Successfully seeded relational indices, sectors, and companies!")
+            except Exception as e:
+                print(f"[Equinox Server] Error running database seeder: {e}")
+                
+        # Start the watchlist email scheduler background task
+        import asyncio
+        from services.recommendations import start_email_scheduler
+        from services.pinger import start_render_pinger
+        
+        scheduler_task = asyncio.create_task(start_email_scheduler())
+        pinger_task = asyncio.create_task(start_render_pinger())
             
     yield
-    # Cancel background scheduler task and pinger task
-    scheduler_task.cancel()
-    pinger_task.cancel()
+    # Cancel background scheduler task and pinger task if started
+    if not is_vercel:
+        scheduler_task.cancel()
+        pinger_task.cancel()
     # Close database pool on server shutdown
     await Database.close_db()
 
