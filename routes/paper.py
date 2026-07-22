@@ -5,6 +5,7 @@ import yfinance as yf
 from datetime import datetime, timedelta
 from uuid import uuid4
 import logging
+import math
 
 from dependencies import get_current_user
 from database.connection import (
@@ -81,6 +82,25 @@ async def get_or_create_portfolio(user_id: str):
         await portfolios_col.insert_one(portfolio)
     return portfolio
 
+def is_market_open_ist() -> tuple[bool, str]:
+    """Check if Indian Stock Market (NSE/BSE) is open for intraday trading: Mon-Fri 9:15 AM - 3:30 PM IST."""
+    now_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    weekday = now_ist.weekday()  # 0 = Monday, ..., 4 = Friday
+    
+    if weekday >= 5:
+        return False, "Market is closed on weekends. Intraday paper trading is allowed only Mon-Fri from 9:15 AM to 3:30 PM IST."
+        
+    current_minutes = now_ist.hour * 60 + now_ist.minute
+    open_minutes = 9 * 60 + 15   # 9:15 AM IST (555 mins)
+    close_minutes = 15 * 60 + 30 # 3:30 PM IST (930 mins)
+    
+    if open_minutes <= current_minutes < close_minutes:
+        return True, "Market is Open (9:15 AM - 3:30 PM IST)"
+    elif current_minutes < open_minutes:
+        return False, "Market is closed. Intraday paper trading opens at 9:15 AM IST."
+    else:
+        return False, "Market is closed for the day. Intraday paper trading operates between 9:15 AM and 3:30 PM IST."
+
 @router.get("/portfolio")
 async def get_portfolio(user: dict = Depends(get_current_user)):
     user_id = user["email"]
@@ -89,13 +109,9 @@ async def get_portfolio(user: dict = Depends(get_current_user)):
     positions_col = get_paper_positions_collection()
     positions = await positions_col.find({"user_id": user_id}).to_list(None)
     
-    # Calculate IST time from UTC (UTC+5.5)
     now_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
-    current_hour = now_ist.hour
-    current_minute = now_ist.minute
-    
-    # Market hours are 9:15 AM to 4:00 PM IST (reset to 0 after 4 PM)
-    is_market_closed = current_hour >= 16 or current_hour < 9 or (current_hour == 9 and current_minute < 15)
+    is_open, market_msg = is_market_open_ist()
+    is_market_closed = not is_open
     
     formatted_positions = []
     total_unrealized_pnl = 0
@@ -104,27 +120,43 @@ async def get_portfolio(user: dict = Depends(get_current_user)):
     
     for pos in positions:
         try:
-            live_price, prev_close = get_live_and_prev_price(pos["symbol"])
+            avg_price = float(pos.get("avg_price", 0.0) or 0.0)
+            qty = int(pos.get("quantity", 0) or 0)
             
-            # Invested capital (absolute value represents size of position)
-            qty = pos["quantity"]
-            invested = abs(qty) * pos["avg_price"]
+            try:
+                live_price, prev_close = get_live_and_prev_price(pos["symbol"])
+                if not live_price or not (isinstance(live_price, (int, float)) and math.isfinite(live_price)):
+                    live_price = avg_price
+                if not prev_close or not (isinstance(prev_close, (int, float)) and math.isfinite(prev_close)):
+                    prev_close = live_price
+            except Exception:
+                live_price = avg_price
+                prev_close = avg_price
+                
+            invested = abs(qty) * avg_price
             current_value = abs(qty) * live_price
             
-            # Calculate Day's P&L
             if is_market_closed:
                 pnl = 0.0
                 pnl_percent = 0.0
             else:
-                # Compare against prev close for held shares, avg price for shares bought today
-                pos_created_ist = pos["created_at"] + timedelta(hours=5, minutes=30)
+                pos_created_ist = pos.get("created_at", datetime.utcnow()) + timedelta(hours=5, minutes=30)
                 is_bought_today = pos_created_ist.date() == now_ist.date()
-                base_price = pos["avg_price"] if is_bought_today else prev_close
-                
-                # Formula (live_price - base_price) * qty works for both long (>0) and short (<0)
+                base_price = avg_price if is_bought_today else prev_close
+                if not base_price or base_price <= 0:
+                    base_price = avg_price
+                    
                 pnl = (live_price - base_price) * qty
-                pnl_percent = (pnl / (base_price * abs(qty))) * 100 if base_price > 0 else 0
+                denom = base_price * abs(qty)
+                pnl_percent = (pnl / denom * 100.0) if denom > 0 else 0.0
                 
+            # Guarantee no NaN or Infinity floats
+            if not math.isfinite(pnl): pnl = 0.0
+            if not math.isfinite(pnl_percent): pnl_percent = 0.0
+            if not math.isfinite(invested): invested = 0.0
+            if not math.isfinite(current_value): current_value = 0.0
+            if not math.isfinite(live_price): live_price = avg_price
+            
             total_unrealized_pnl += pnl
             total_invested += invested
             total_current_value += current_value
@@ -132,7 +164,7 @@ async def get_portfolio(user: dict = Depends(get_current_user)):
             formatted_positions.append({
                 "symbol": pos["symbol"],
                 "quantity": qty,
-                "avg_price": round(pos["avg_price"], 2),
+                "avg_price": round(avg_price, 2),
                 "ltp": round(live_price, 2),
                 "invested": round(invested, 2),
                 "current_value": round(current_value, 2),
@@ -140,7 +172,7 @@ async def get_portfolio(user: dict = Depends(get_current_user)):
                 "pnl_percent": round(pnl_percent, 2)
             })
         except Exception as e:
-            logger.error(f"Error processing position {pos['symbol']}: {e}")
+            logger.error(f"Error processing position {pos.get('symbol')}: {e}")
             
     # Calculate today's realized P&L from orders executed today
     if is_market_closed:
@@ -170,13 +202,22 @@ async def get_portfolio(user: dict = Depends(get_current_user)):
     
     return {
         "portfolio": portfolio,
-        "positions": formatted_positions
+        "positions": formatted_positions,
+        "market_status": {
+            "is_open": is_open,
+            "message": market_msg,
+            "hours": "9:15 AM - 3:30 PM IST"
+        }
     }
 
 @router.post("/order")
 async def place_order(order: OrderRequest, user: dict = Depends(get_current_user)):
     user_id = user["email"]
     
+    is_open, market_msg = is_market_open_ist()
+    if not is_open:
+        raise HTTPException(status_code=400, detail=market_msg)
+        
     if order.quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be greater than zero")
         

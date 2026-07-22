@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from database.connection import Database
-from routes import auth, onboarding, market, watchlist, ai, paper
+from routes import auth, onboarding, market, watchlist, ai, paper, email_alerts
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -28,10 +28,10 @@ async def lifespan(app: FastAPI):
                 
         # Start the watchlist email scheduler background task
         import asyncio
-        from services.recommendations import start_email_scheduler
+        from routes.email_alerts import start_email_alerts_background_worker
         from services.pinger import start_render_pinger
         
-        scheduler_task = asyncio.create_task(start_email_scheduler())
+        scheduler_task = asyncio.create_task(start_email_alerts_background_worker())
         pinger_task = asyncio.create_task(start_render_pinger())
             
     yield
@@ -70,6 +70,7 @@ app.include_router(market.router)
 app.include_router(watchlist.router)
 app.include_router(ai.router)
 app.include_router(paper.router)
+app.include_router(email_alerts.router)
 
 @app.get("/")
 def read_root():

@@ -534,11 +534,13 @@ async def get_market_sentiment(symbol: str):
             
         tavily_key = tavily_keys[0] # Just use the first one for simplicity, or cycle if needed
         client = AsyncTavilyClient(api_key=tavily_key)
-        query = f"Current market sentiment and news for {symbol} stock"
+        query = f"Latest intraday breaking news market sentiment updates for {symbol} stock today"
         
         response = await client.search(
             query=query,
-            search_depth="basic",
+            search_depth="advanced",
+            topic="news",
+            days=1,
             max_results=6,
             include_answer=True
         )
@@ -715,40 +717,44 @@ class ArticleDetailRequest(BaseModel):
 @router.post("/sentiment/article")
 async def get_article_detail_endpoint(req: ArticleDetailRequest):
     tavily_key = get_tavily_key()
-    if not tavily_key:
-        raise HTTPException(status_code=500, detail="Tavily API key is not configured.")
-        
-    logger.info(f"Deep scraping and summarizing article: {req.url}")
+    logger.info(f"Deep scraping article with trafilatura & tavily: {req.url}")
     
-    # 1. Search Tavily specifically for the URL and extract raw content
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.post(
-                "https://api.tavily.com/search",
-                json={
-                    "api_key": tavily_key,
-                    "query": f"site:{req.url} or {req.title}",
-                    "search_depth": "advanced",
-                    "include_raw_content": True,
-                    "max_results": 1
-                },
-                timeout=15.0
-            )
-            
-            if res.status_code != 200:
-                logger.error(f"Tavily search for article failed: {res.text}")
-                raise HTTPException(status_code=502, detail="Tavily search API failed.")
-                
-            tavily_data = res.json()
-            results = tavily_data.get("results", [])
-    except Exception as e:
-        logger.error(f"Tavily request failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Tavily request failed: {str(e)}")
-        
     raw_content = ""
-    if results:
-        raw_content = results[0].get("raw_content", results[0].get("content", ""))
+    # 1. First attempt deep scraping with trafilatura directly from the URL
+    try:
+        import trafilatura
+        downloaded = trafilatura.fetch_url(req.url)
+        if downloaded:
+            extracted = trafilatura.extract(downloaded, include_links=False, include_images=False)
+            if extracted and len(extracted.strip()) > 100:
+                raw_content = extracted.strip()
+                logger.info(f"Successfully deep-scraped {len(raw_content)} chars with Trafilatura from {req.url}")
+    except Exception as e:
+        logger.warning(f"Trafilatura deep scrape error for {req.url}: {e}")
         
+    # 2. Fallback to Tavily advanced search if trafilatura did not extract sufficient text
+    if not raw_content and tavily_key:
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": tavily_key,
+                        "query": f"site:{req.url} or {req.title}",
+                        "search_depth": "advanced",
+                        "include_raw_content": True,
+                        "max_results": 1
+                    },
+                    timeout=15.0
+                )
+                if res.status_code == 200:
+                    tavily_data = res.json()
+                    results = tavily_data.get("results", [])
+                    if results:
+                        raw_content = results[0].get("raw_content", results[0].get("content", ""))
+        except Exception as e:
+            logger.error(f"Tavily deep search fallback failed: {e}")
+            
     if not raw_content:
         return {
             "summary": "Unable to extract raw text content from the original website. Please visit the original site using the link below.",
