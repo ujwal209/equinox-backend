@@ -6,16 +6,15 @@
       "use": "@vercel/python"
     }
   ],
+  "functions": {
+    "main.py": {
+      "maxDuration": 60
+    }
+  },
   "routes": [
     {
       "src": "/(.*)",
       "dest": "main.py"
-    }
-  ],
-  "crons": [
-    {
-      "path": "/api/v1/market/recommendations/email/cron",
-      "schedule": "0 0 * * *"
     }
   ]
 }

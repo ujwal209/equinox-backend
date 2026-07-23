@@ -73,3 +73,7 @@ def get_paper_orders_collection():
 def get_recommendations_cache_collection():
     return get_db()["recommendations_cache"]
 
+def get_email_logs_collection():
+    return get_db()["email_logs"]
+
+
